@@ -30,6 +30,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // NamespaceClassReconciler reconciles a NamespaceClass object
@@ -56,7 +57,10 @@ func (r *NamespaceClassReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	ncls := &opsv1.NamespaceClass{}
 	if err := r.Get(ctx, req.NamespacedName, ncls); err != nil {
-		logger.Error(err, "unable to get namespace class")
+		if apierrors.IsNotFound(err) {
+			return ctrl.Result{}, nil
+		}
+		logger.Error(err, "unable to fetch NamespaceClass")
 		return ctrl.Result{}, err
 	}
 
@@ -76,7 +80,7 @@ func (r *NamespaceClassReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		// reconcile the namespace
 		result, err := ctrl.Result{}, error(nil)
 
-		result, err = r.reconcileResource(ctx, namespace.Name, "ncls-networkpolicy",
+		result, err = r.reconcileResource(ctx, ncls, namespace.Name, "ncls-networkpolicy",
 			&networkingv1.NetworkPolicy{}, ncls.Spec.NetworkPolicy)
 		if err != nil {
 			return result, err
@@ -86,7 +90,7 @@ func (r *NamespaceClassReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	return ctrl.Result{}, nil
 }
 
-func (r *NamespaceClassReconciler) reconcileResource(ctx context.Context, resNamespace string, resName string,
+func (r *NamespaceClassReconciler) reconcileResource(ctx context.Context, ncls *opsv1.NamespaceClass, resNamespace string, resName string,
 	resObj client.Object, resSpec interface{}) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
@@ -111,6 +115,7 @@ func (r *NamespaceClassReconciler) reconcileResource(ctx context.Context, resNam
 	if !reflect.ValueOf(resSpec).IsNil() && err != nil {
 		resObj.SetNamespace(resNamespace)
 		resObj.SetName(resName)
+		resObj.SetOwnerReferences([]metav1.OwnerReference{{APIVersion: ncls.APIVersion, Kind: ncls.Kind, Name: ncls.Name, UID: ncls.GetUID()}})
 		reflect.ValueOf(resObj).Elem().FieldByName("Spec").Set(reflect.ValueOf(resSpec).Elem())
 		if err := r.Create(ctx, resObj); err != nil {
 			logger.Error(err, "unable to create resource", "namespacedName", namespacedName)
@@ -122,6 +127,9 @@ func (r *NamespaceClassReconciler) reconcileResource(ctx context.Context, resNam
 
 	// update the resource
 	if !reflect.ValueOf(resSpec).IsNil() && err == nil {
+		resObj.SetNamespace(resNamespace)
+		resObj.SetName(resName)
+		resObj.SetOwnerReferences([]metav1.OwnerReference{{APIVersion: ncls.APIVersion, Kind: ncls.Kind, Name: ncls.Name, UID: ncls.GetUID()}})
 		reflect.ValueOf(resObj).Elem().FieldByName("Spec").Set(reflect.ValueOf(resSpec).Elem())
 		if err := r.Update(ctx, resObj); err != nil {
 			logger.Error(err, "unable to update resource", "namespacedName", namespacedName)
@@ -138,5 +146,6 @@ func (r *NamespaceClassReconciler) reconcileResource(ctx context.Context, resNam
 func (r *NamespaceClassReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&opsv1.NamespaceClass{}).
+		Owns(&networkingv1.NetworkPolicy{}).
 		Complete(r)
 }
