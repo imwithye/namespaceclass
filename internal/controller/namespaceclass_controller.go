@@ -18,13 +18,18 @@ package controller
 
 import (
 	"context"
+	"reflect"
 
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	opsv1 "github.com/imwithye/namespaceclass/api/v1"
+	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
 // NamespaceClassReconciler reconciles a NamespaceClass object
@@ -47,9 +52,84 @@ type NamespaceClassReconciler struct {
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.17.0/pkg/reconcile
 func (r *NamespaceClassReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = log.FromContext(ctx)
+	logger := log.FromContext(ctx)
 
-	// TODO(user): your logic here
+	ncls := &opsv1.NamespaceClass{}
+	if err := r.Get(ctx, req.NamespacedName, ncls); err != nil {
+		logger.Error(err, "unable to get namespace class")
+		return ctrl.Result{}, err
+	}
+
+	namespaces := corev1.NamespaceList{}
+	if err := r.List(ctx, &namespaces); err != nil {
+		logger.Error(err, "unable to list namespaces")
+		return ctrl.Result{}, err
+	}
+
+	for _, namespace := range namespaces.Items {
+		nclsName, ok := namespace.Labels["namespaceclass.akuity.io/name"]
+		if !ok || nclsName != ncls.Name {
+			// the namespace is not managed by this namespace class
+			continue
+		}
+
+		// reconcile the namespace
+		result, err := ctrl.Result{}, error(nil)
+
+		result, err = r.reconcileResource(ctx, namespace.Name, "ncls-networkpolicy",
+			&networkingv1.NetworkPolicy{}, ncls.Spec.NetworkPolicy)
+		if err != nil {
+			return result, err
+		}
+	}
+
+	return ctrl.Result{}, nil
+}
+
+func (r *NamespaceClassReconciler) reconcileResource(ctx context.Context, resNamespace string, resName string,
+	resObj client.Object, resSpec interface{}) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+
+	namespacedName := types.NamespacedName{Namespace: resNamespace, Name: resName}
+	err := r.Get(ctx, namespacedName, resObj)
+	if err != nil && !apierrors.IsNotFound(err) {
+		logger.Error(err, "unable to get resource", "namespacedName", namespacedName)
+		return ctrl.Result{}, err
+	}
+
+	// delete the resource
+	if reflect.ValueOf(resSpec).IsNil() && err == nil {
+		if err := r.Delete(ctx, resObj); err != nil {
+			logger.Error(err, "unable to delete resource", "namespacedName", namespacedName)
+			return ctrl.Result{}, err
+		}
+		logger.Info("resource deleted", "namespacedName", namespacedName)
+		return ctrl.Result{}, nil
+	}
+
+	// create the resource
+	if !reflect.ValueOf(resSpec).IsNil() && err != nil {
+		resObj.SetNamespace(resNamespace)
+		resObj.SetName(resName)
+		reflect.ValueOf(resObj).Elem().FieldByName("Spec").Set(reflect.ValueOf(resSpec).Elem())
+		if err := r.Create(ctx, resObj); err != nil {
+			logger.Error(err, "unable to create resource", "namespacedName", namespacedName)
+			return ctrl.Result{}, err
+		}
+		logger.Info("resource created", "namespacedName", namespacedName)
+		return ctrl.Result{}, nil
+	}
+
+	// update the resource
+	if !reflect.ValueOf(resSpec).IsNil() && err == nil {
+		reflect.ValueOf(resObj).Elem().FieldByName("Spec").Set(reflect.ValueOf(resSpec).Elem())
+		if err := r.Update(ctx, resObj); err != nil {
+			logger.Error(err, "unable to update resource", "namespacedName", namespacedName)
+			return ctrl.Result{}, err
+		}
+		logger.Info("resource updated", "namespacedName", namespacedName)
+		return ctrl.Result{}, nil
+	}
 
 	return ctrl.Result{}, nil
 }

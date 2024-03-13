@@ -1,0 +1,16 @@
+apiVersion: ops.akuity.io/v1
+kind: NamespaceClass
+metadata:
+  name: public-network
+spec:
+  networkPolicy:
+    podSelector:
+      matchLabels:
+        app: nginx
+    policyTypes:
+      - Ingress
+      - Egress
+    ingress:
+      - {}
+    egress:
+      - {}

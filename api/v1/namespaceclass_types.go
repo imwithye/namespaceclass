@@ -17,6 +17,7 @@ limitations under the License.
 package v1
 
 import (
+	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -28,8 +29,8 @@ type NamespaceClassSpec struct {
 	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
 
-	// Foo is an example field of NamespaceClass. Edit namespaceclass_types.go to remove/update
-	Foo string `json:"foo,omitempty"`
+	// NetworkPolicy defines which network policy to use for this namespace class
+	NetworkPolicy *networkingv1.NetworkPolicySpec `json:"networkPolicy,omitempty"`
 }
 
 // NamespaceClassStatus defines the observed state of NamespaceClass
@@ -39,6 +40,7 @@ type NamespaceClassStatus struct {
 }
 
 //+kubebuilder:object:root=true
+//+kubebuilder:resource:scope=Cluster,shortName=ncls
 //+kubebuilder:subresource:status
 
 // NamespaceClass is the Schema for the namespaceclasses API
