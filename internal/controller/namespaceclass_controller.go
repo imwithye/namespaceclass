@@ -24,6 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	opsv1 "github.com/imwithye/namespaceclass/api/v1"
@@ -53,16 +54,51 @@ type NamespaceClassReconciler struct {
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.17.0/pkg/reconcile
 func (r *NamespaceClassReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	logger := log.FromContext(ctx)
+	ns := &corev1.Namespace{}
+	if err := r.Get(ctx, req.NamespacedName, ns); err == nil {
+		return r.reconcileNamespace(ctx, ns)
+	}
 
 	ncls := &opsv1.NamespaceClass{}
-	if err := r.Get(ctx, req.NamespacedName, ncls); err != nil {
+	if err := r.Get(ctx, req.NamespacedName, ncls); err == nil {
+		return r.reconcileNamespaceClass(ctx, ncls)
+	}
+
+	return ctrl.Result{}, nil
+}
+
+// reconcileNamespace reconciles a Namespace object
+func (r *NamespaceClassReconciler) reconcileNamespace(ctx context.Context, ns *corev1.Namespace) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+	logger.Info("reconciling namespace", "name", ns.Name)
+
+	nclsName, ok := ns.Labels["namespaceclass.akuity.io/name"]
+	if !ok {
+		// the namespace is either not managed by a namespace class or the namespace class is removed
+		// when namespace class is removed, we shall delete the resources
+		// setting the spec to nil will trigger the deletion of the resource
+		return r.reconcileResource(ctx, nil, ns.Name, "ncls-networkpolicy", &networkingv1.NetworkPolicy{}, nil)
+	}
+
+	ncls := &opsv1.NamespaceClass{}
+	if err := r.Get(ctx, types.NamespacedName{Name: nclsName}, ncls); err != nil {
 		if apierrors.IsNotFound(err) {
-			return ctrl.Result{}, nil
+			// the namespace class is removed
+			// setting the spec to nil will trigger the deletion of the resource
+			return r.reconcileResource(ctx, nil, ns.Name, "ncls-networkpolicy", &networkingv1.NetworkPolicy{}, nil)
 		}
-		logger.Error(err, "unable to fetch NamespaceClass")
+		logger.Error(err, "unable to get namespace class", "name", nclsName)
 		return ctrl.Result{}, err
 	}
+
+	// reconcile the namespace
+	return r.reconcileResource(ctx, ncls, ns.Name, "ncls-networkpolicy", &networkingv1.NetworkPolicy{}, ncls.Spec.NetworkPolicy)
+}
+
+// reconcileNamespaceClass reconciles a NamespaceClass object
+func (r *NamespaceClassReconciler) reconcileNamespaceClass(ctx context.Context, ncls *opsv1.NamespaceClass) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+	logger.Info("reconciling namespace class", "name", ncls.Name)
 
 	namespaces := corev1.NamespaceList{}
 	if err := r.List(ctx, &namespaces); err != nil {
@@ -102,7 +138,7 @@ func (r *NamespaceClassReconciler) reconcileResource(ctx context.Context, ncls *
 	}
 
 	// delete the resource
-	if reflect.ValueOf(resSpec).IsNil() && err == nil {
+	if (resSpec == nil || reflect.ValueOf(resSpec).IsNil()) && err == nil {
 		if err := r.Delete(ctx, resObj); err != nil {
 			logger.Error(err, "unable to delete resource", "namespacedName", namespacedName)
 			return ctrl.Result{}, err
@@ -112,7 +148,7 @@ func (r *NamespaceClassReconciler) reconcileResource(ctx context.Context, ncls *
 	}
 
 	// create the resource
-	if !reflect.ValueOf(resSpec).IsNil() && err != nil {
+	if !(resSpec == nil || reflect.ValueOf(resSpec).IsNil()) && err != nil {
 		resObj.SetNamespace(resNamespace)
 		resObj.SetName(resName)
 		resObj.SetOwnerReferences([]metav1.OwnerReference{{APIVersion: ncls.APIVersion, Kind: ncls.Kind, Name: ncls.Name, UID: ncls.GetUID()}})
@@ -126,7 +162,7 @@ func (r *NamespaceClassReconciler) reconcileResource(ctx context.Context, ncls *
 	}
 
 	// update the resource
-	if !reflect.ValueOf(resSpec).IsNil() && err == nil {
+	if !(resSpec == nil || reflect.ValueOf(resSpec).IsNil()) && err == nil {
 		resObj.SetNamespace(resNamespace)
 		resObj.SetName(resName)
 		resObj.SetOwnerReferences([]metav1.OwnerReference{{APIVersion: ncls.APIVersion, Kind: ncls.Kind, Name: ncls.Name, UID: ncls.GetUID()}})
@@ -147,5 +183,6 @@ func (r *NamespaceClassReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&opsv1.NamespaceClass{}).
 		Owns(&networkingv1.NetworkPolicy{}).
+		Watches(&corev1.Namespace{}, &handler.EnqueueRequestForObject{}).
 		Complete(r)
 }
